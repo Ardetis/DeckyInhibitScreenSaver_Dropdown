@@ -1,6 +1,6 @@
 # Decky Screen Saver
 
-This fork add a dropdown menu with the same values as those found in the steam power setting.
+This fork adds a dropdown menu with the same values as those found in the steam power setting.
 
 This way you can choose timeout minutes rather than always defaulting to 5/10 minutes.
 
