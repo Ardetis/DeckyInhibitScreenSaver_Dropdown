@@ -1,5 +1,13 @@
 # Decky Screen Saver
 
+This fork add a dropdown menu with the same values as those found in the steam power setting.
+
+This way you can choose timeout minutes rather than always defaulting to 5/10 minutes.
+
+Values are:
+
+Disabled, 1 minutes, 5 minutes, 15 minutes, 30 minutes, 1 hour.
+
 [中文说明](./README_ZH.md)
 
 This is a plugin for Decky Loader (A plugin loader for the Steam Deck), it will automatically inhibit screensaver during video playback under SteamOS game mode.
