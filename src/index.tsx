@@ -3,13 +3,14 @@ import {
   ToggleField,
   PanelSection,
   PanelSectionRow,
+  DropdownItem,
   ServerAPI,
   findModuleChild,
   Module,
   staticClasses,
 } from "decky-frontend-lib";
 import { VFC } from "react";
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { GiNightSleep } from "react-icons/gi";
 import i18n from './i18n'
 
@@ -36,13 +37,62 @@ const SystemSleep = findModule("InitiateSleep")
 
 const RUN_ON_LOGIN = "run_on_login"
 const SHOW_NOTIFY  = "show_notify"
+const BATTERY_IDLE_MINUTES = "battery_idle_minutes"
+const AC_IDLE_MINUTES = "ac_idle_minutes"
+const BATTERY_SUSPEND_MINUTES = "battery_suspend_minutes"
+const AC_SUSPEND_MINUTES = "ac_suspend_minutes"
+
+const DEFAULT_BATTERY_IDLE_MINUTES = 5
+const DEFAULT_AC_IDLE_MINUTES = 5
+const DEFAULT_BATTERY_SUSPEND_MINUTES = 10
+const DEFAULT_AC_SUSPEND_MINUTES = 10
+
+const minutesToSeconds = (minutes: number) => minutes * 60
+const TIMEOUT_PRESET_MINUTES = [0, 1, 5, 15, 30, 60] as const
+const formatTimeoutMinutes = (minutes: number) => {
+  if (minutes === 0) return "Disabled"
+  if (minutes === 60) return "1 hour"
+  return `${minutes} minutes`
+}
+const timeoutDropdownOptions = TIMEOUT_PRESET_MINUTES.map((minutes) => ({
+  data: minutes,
+  label: formatTimeoutMinutes(minutes),
+}))
+
+interface TimeoutDropdownProps {
+  label: string
+  value: number
+  onChange: (minutes: number) => Promise<void>
+}
+
+const TimeoutDropdown: VFC<TimeoutDropdownProps> = ({ label, value, onChange }) => {
+  return (
+    <PanelSectionRow>
+      <DropdownItem
+        label={label}
+        menuLabel={label}
+        rgOptions={timeoutDropdownOptions as any}
+        selectedOption={value}
+        focusable
+        onChange={(option: { data: number }) => {
+          void onChange(option.data)
+        }}
+      />
+    </PanelSectionRow>
+  )
+}
 
 const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
   const [running, setRunning] = useState<boolean>(backendRunning);
   const [notify, setNotify] = useState<boolean>(showNotify);
+  const [batteryIdleMinutes, setBatteryIdleMinutes] = useState<number>(DEFAULT_BATTERY_IDLE_MINUTES);
+  const [acIdleMinutes, setAcIdleMinutes] = useState<number>(DEFAULT_AC_IDLE_MINUTES);
+  const [batterySuspendMinutes, setBatterySuspendMinutes] = useState<number>(DEFAULT_BATTERY_SUSPEND_MINUTES);
+  const [acSuspendMinutes, setAcSuspendMinutes] = useState<number>(DEFAULT_AC_SUSPEND_MINUTES);
 
   const startBackend = async () => {
-    return await serverApi.callPluginMethod<any, any>("start_backend", {});
+    const result = await serverApi.callPluginMethod<any, any>("start_backend", {});
+    return result;
   }
 
   const stopBackend = async () => {
@@ -52,6 +102,45 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
   const setSettings = async (key: string, value: any) => {
     return await serverApi.callPluginMethod<any, any>("set_settings", {key: key, value: value});
   }
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      const batteryIdle = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: BATTERY_IDLE_MINUTES,
+        defaults: DEFAULT_BATTERY_IDLE_MINUTES,
+      });
+      if (batteryIdle.success) {
+        setBatteryIdleMinutes(batteryIdle.result);
+      }
+
+      const acIdle = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: AC_IDLE_MINUTES,
+        defaults: DEFAULT_AC_IDLE_MINUTES,
+      });
+      if (acIdle.success) {
+        setAcIdleMinutes(acIdle.result);
+      }
+
+      const batterySuspend = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: BATTERY_SUSPEND_MINUTES,
+        defaults: DEFAULT_BATTERY_SUSPEND_MINUTES,
+      });
+      if (batterySuspend.success) {
+        setBatterySuspendMinutes(batterySuspend.result);
+      }
+
+      const acSuspend = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: AC_SUSPEND_MINUTES,
+        defaults: DEFAULT_AC_SUSPEND_MINUTES,
+      });
+      if (acSuspend.success) {
+        setAcSuspendMinutes(acSuspend.result);
+      }
+    };
+
+    loadSettings();
+  }, [serverApi]);
+
   return (
     <PanelSection title={t('Settings')}>
       <PanelSectionRow>
@@ -79,6 +168,38 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
           />
       <label>{t('notify_tip')}</label>
       </PanelSectionRow>
+      <TimeoutDropdown
+        label="On battery power, dim after"
+        value={batteryIdleMinutes}
+        onChange={async (minutes) => {
+          setBatteryIdleMinutes(minutes)
+          await setSettings(BATTERY_IDLE_MINUTES, minutes)
+        }}
+      />
+      <TimeoutDropdown
+        label="When plugged in, dim after"
+        value={acIdleMinutes}
+        onChange={async (minutes) => {
+          setAcIdleMinutes(minutes)
+          await setSettings(AC_IDLE_MINUTES, minutes)
+        }}
+      />
+      <TimeoutDropdown
+        label="On battery power, sleep after"
+        value={batterySuspendMinutes}
+        onChange={async (minutes) => {
+          setBatterySuspendMinutes(minutes)
+          await setSettings(BATTERY_SUSPEND_MINUTES, minutes)
+        }}
+      />
+      <TimeoutDropdown
+        label="When plugged in, sleep after"
+        value={acSuspendMinutes}
+        onChange={async (minutes) => {
+          setAcSuspendMinutes(minutes)
+          await setSettings(AC_SUSPEND_MINUTES, minutes)
+        }}
+      />
     </PanelSection>
   );
 };
@@ -212,6 +333,20 @@ export default definePlugin((serverApi: ServerAPI) => {
     await updateIdleSetting(_battery_idle+_ac_idle);
     await updateSuspendSetting(_battery_suspend+_ac_suspend);
   }
+
+  const applySavedSettings = async () => {
+    const batteryIdle = await getSettings(BATTERY_IDLE_MINUTES, DEFAULT_BATTERY_IDLE_MINUTES)
+    const acIdle = await getSettings(AC_IDLE_MINUTES, DEFAULT_AC_IDLE_MINUTES)
+    const batterySuspend = await getSettings(BATTERY_SUSPEND_MINUTES, DEFAULT_BATTERY_SUSPEND_MINUTES)
+    const acSuspend = await getSettings(AC_SUSPEND_MINUTES, DEFAULT_AC_SUSPEND_MINUTES)
+
+    const batteryIdleSeconds = minutesToSeconds(batteryIdle.success ? batteryIdle.result : DEFAULT_BATTERY_IDLE_MINUTES)
+    const acIdleSeconds = minutesToSeconds(acIdle.success ? acIdle.result : DEFAULT_AC_IDLE_MINUTES)
+    const batterySuspendSeconds = minutesToSeconds(batterySuspend.success ? batterySuspend.result : DEFAULT_BATTERY_SUSPEND_MINUTES)
+    const acSuspendSeconds = minutesToSeconds(acSuspend.success ? acSuspend.result : DEFAULT_AC_SUSPEND_MINUTES)
+
+    await updateSetting(batteryIdleSeconds, acIdleSeconds, batterySuspendSeconds, acSuspendSeconds)
+  }
   
   const getEvent = async () => {
     return await serverApi.callPluginMethod<any, any>("get_event", {});
@@ -222,7 +357,8 @@ export default definePlugin((serverApi: ServerAPI) => {
   }
 
   const startBackend = async () => {
-    return await serverApi.callPluginMethod<any, any>("start_backend", {});
+    const result = await serverApi.callPluginMethod<any, any>("start_backend", {});
+    return result;
   }
 
   let timeout:NodeJS.Timeout;
@@ -251,7 +387,7 @@ export default definePlugin((serverApi: ServerAPI) => {
         await updateSetting(0, 0, 0, 0);
       } else if (e.type == 'UnInhibit') {
         notify(t("ScreenSaver"), t("UnInhibit"))
-        await updateSetting(300, 300, 600, 600);
+        await applySavedSettings();
         // 1. there is no operation for a long period of time (like 15 minutes)
         // 2. the application automatically uninhibit screensaver
         // 3. there is no operation after uninhibit screensaver
@@ -298,7 +434,7 @@ export default definePlugin((serverApi: ServerAPI) => {
       if (controllerHandle) controllerHandle.unregister()
       if (suspendHandle) suspendHandle.unregister()
       setTimeout(async () => {
-        await updateSetting(300, 300, 600, 600);
+        await applySavedSettings();
       }, 0);
     },
   };
