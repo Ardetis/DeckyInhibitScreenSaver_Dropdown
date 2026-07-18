@@ -8,6 +8,8 @@ Values are:
 
 Disabled, 1 minutes, 5 minutes, 15 minutes, 30 minutes, 1 hour.
 
+Credits to xfangfang, buy him a cup of coffee (https://www.paypal.me/xfangfang)
+
 [中文说明](./README_ZH.md)
 
 This is a plugin for Decky Loader (A plugin loader for the Steam Deck), it will automatically inhibit screensaver during video playback under SteamOS game mode.
