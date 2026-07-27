@@ -1,12 +1,18 @@
 # Decky Screen Saver
 
-This fork adds a dropdown menu with the same values as those found in the steam power settings.
+This fork adds Steam-style dropdowns for configuring separate battery and AC
+screen-dimming and sleep timeouts. Available values are Disabled, 1 minute,
+5 minutes, 15 minutes, 30 minutes, and 1 hour. Changes are saved and applied
+directly to Steam's power settings.
 
-This way you can choose timeout minutes rather than always defaulting to 5/10 minutes.
+It also adds media-aware screen inhibition for Firefox and Plex. Playing media
+prevents dimming and sleep, while pausing, stopping, or closing the player
+restores your selected Steam timeouts after a three-second grace period.
+Resuming playback during that grace period keeps inhibition active.
 
-Values are:
-
-Disabled, 1 minutes, 5 minutes, 15 minutes, 30 minutes, 1 hour.
+Runtime monitoring can be enabled or disabled with the Background Monitor
+setting. Optional Diagnostic Logging records portal, MPRIS, policy, inhibitor,
+and power-setting activity without affecting whether the monitors run.
 
 Credits to xfangfang, buy him a cup of coffee (https://www.paypal.me/xfangfang)
 
