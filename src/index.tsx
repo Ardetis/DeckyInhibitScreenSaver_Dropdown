@@ -14,11 +14,19 @@ import i18n from './i18n'
 
 let backendRunning = false;
 let showNotify     = false;
+let diagnosticLogging = false;
 let language = i18n.getCurrentLanguage()
 const t = i18n.useTranslations(language)
 
+const diagnosticInfo = (...args: any[]) => {
+  if (diagnosticLogging) console.info(...args)
+}
+const diagnosticError = (...args: any[]) => {
+  if (diagnosticLogging) console.error(...args)
+}
 const RUN_ON_LOGIN = "run_on_login"
 const SHOW_NOTIFY  = "show_notify"
+const DIAGNOSTIC_LOGGING = "diagnostic_logging"
 const BATTERY_IDLE_MINUTES = "battery_idle_minutes"
 const AC_IDLE_MINUTES = "ac_idle_minutes"
 const BATTERY_SUSPEND_MINUTES = "battery_suspend_minutes"
@@ -64,9 +72,13 @@ const TimeoutDropdown: VFC<TimeoutDropdownProps> = ({ label, value, onChange }) 
   )
 }
 
-const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
+const Content: VFC<{
+  serverApi: ServerAPI
+  applySettings: (source: string) => Promise<void>
+}> = ({serverApi, applySettings}) => {
   const [running, setRunning] = useState<boolean>(backendRunning);
   const [notify, setNotify] = useState<boolean>(showNotify);
+  const [logging, setLogging] = useState<boolean>(diagnosticLogging);
   const [batteryIdleMinutes, setBatteryIdleMinutes] = useState<number>(DEFAULT_BATTERY_IDLE_MINUTES);
   const [acIdleMinutes, setAcIdleMinutes] = useState<number>(DEFAULT_AC_IDLE_MINUTES);
   const [batterySuspendMinutes, setBatterySuspendMinutes] = useState<number>(DEFAULT_BATTERY_SUSPEND_MINUTES);
@@ -118,6 +130,39 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
       if (acSuspend.success) {
         setAcSuspendMinutes(acSuspend.result);
       }
+
+      const runOnLogin = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: RUN_ON_LOGIN,
+        defaults: true,
+      });
+      if (runOnLogin.success && runOnLogin.result) {
+        await startBackend()
+      }
+
+      const backendStatus = await serverApi.callPluginMethod<any, any>("is_running", {});
+      const isRunning = backendStatus.success
+        ? Boolean(backendStatus.result)
+        : Boolean(runOnLogin.success && runOnLogin.result)
+      backendRunning = isRunning
+      setRunning(isRunning)
+
+      const notificationSetting = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: SHOW_NOTIFY,
+        defaults: false,
+      });
+      if (notificationSetting.success) {
+        showNotify = Boolean(notificationSetting.result)
+        setNotify(showNotify)
+      }
+
+      const diagnostic = await serverApi.callPluginMethod<any, any>("get_settings", {
+        key: DIAGNOSTIC_LOGGING,
+        defaults: false,
+      });
+      if (diagnostic.success) {
+        diagnosticLogging = diagnostic.result
+        setLogging(diagnostic.result)
+      }
     };
 
     loadSettings();
@@ -140,7 +185,7 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
       </PanelSectionRow>
       <PanelSectionRow>
       <ToggleField
-          label={t('Show Notify')}
+          label={t('Show Notification')}
           onChange={async (checked) => {
             setNotify(checked)
             showNotify = checked
@@ -156,6 +201,7 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
         onChange={async (minutes) => {
           setBatteryIdleMinutes(minutes)
           await setSettings(BATTERY_IDLE_MINUTES, minutes)
+          await applySettings(BATTERY_IDLE_MINUTES)
         }}
       />
       <TimeoutDropdown
@@ -164,6 +210,7 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
         onChange={async (minutes) => {
           setAcIdleMinutes(minutes)
           await setSettings(AC_IDLE_MINUTES, minutes)
+          await applySettings(AC_IDLE_MINUTES)
         }}
       />
       <TimeoutDropdown
@@ -172,6 +219,7 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
         onChange={async (minutes) => {
           setBatterySuspendMinutes(minutes)
           await setSettings(BATTERY_SUSPEND_MINUTES, minutes)
+          await applySettings(BATTERY_SUSPEND_MINUTES)
         }}
       />
       <TimeoutDropdown
@@ -180,8 +228,21 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
         onChange={async (minutes) => {
           setAcSuspendMinutes(minutes)
           await setSettings(AC_SUSPEND_MINUTES, minutes)
+          await applySettings(AC_SUSPEND_MINUTES)
         }}
       />
+      <PanelSectionRow>
+        <ToggleField
+          label="Diagnostic Logging"
+          description="Log inhibitor activity and Steam power-setting writes"
+          checked={logging}
+          onChange={async (checked) => {
+            setLogging(checked)
+            diagnosticLogging = checked
+            await setSettings(DIAGNOSTIC_LOGGING, checked)
+          }}
+        />
+      </PanelSectionRow>
     </PanelSection>
   );
 };
@@ -207,10 +268,12 @@ export default definePlugin((serverApi: ServerAPI) => {
   }
 
   const _updateSettings = async (data: string) => {
-    await SteamClient.System.UpdateSettings(window.btoa(data))
+    return await SteamClient.System.UpdateSettings(window.btoa(data))
   }
   let updateIdleSetting = _updateSettings;
   let updateSuspendSetting = _updateSettings;
+  const idleSettingApi = 'SteamClient.System.UpdateSettings'
+  let suspendSettingApi = 'SteamClient.System.UpdateSettings'
 
   // SteamClient023 does not have `RegisterForOnSuspendRequest`
   if (!SteamClient.System.RegisterForOnSuspendRequest) {
@@ -224,8 +287,9 @@ export default definePlugin((serverApi: ServerAPI) => {
       wireType: 0
     }
     updateSuspendSetting = async (data: string) => {
-      await SteamClient.Settings.SetSetting(window.btoa(data))
+      return await SteamClient.Settings.SetSetting(window.btoa(data))
     };
+    suspendSettingApi = 'SteamClient.Settings.SetSetting'
   }
 
   /**
@@ -262,16 +326,36 @@ export default definePlugin((serverApi: ServerAPI) => {
     }
   }
 
-  async function updateSetting(battery_idle: number, ac_idle: number, battery_suspend: number, ac_suspend: number) {
-    let _battery_idle = genSettings(SettingDef.battery_idle, battery_idle);
-    let _ac_idle = genSettings(SettingDef.ac_idle, ac_idle);
-    let _battery_suspend = genSettings(SettingDef.battery_suspend, battery_suspend);
-    let _ac_suspend = genSettings(SettingDef.ac_suspend, ac_suspend);
-    await updateIdleSetting(_battery_idle+_ac_idle);
-    await updateSuspendSetting(_battery_suspend+_ac_suspend);
-  }
+  async function updateSetting(
+    battery_idle: number,
+    ac_idle: number,
+    battery_suspend: number,
+    ac_suspend: number,
+    source: string,
+  ) {
+    const values = { battery_idle, ac_idle, battery_suspend, ac_suspend }
+    diagnosticInfo(
+      `[power-settings] apply start source=${source} idleApi=${idleSettingApi} suspendApi=${suspendSettingApi}`,
+      values,
+    )
 
-  const applySavedSettings = async () => {
+    const _battery_idle = genSettings(SettingDef.battery_idle, battery_idle);
+    const _ac_idle = genSettings(SettingDef.ac_idle, ac_idle);
+    const _battery_suspend = genSettings(SettingDef.battery_suspend, battery_suspend);
+    const _ac_suspend = genSettings(SettingDef.ac_suspend, ac_suspend);
+
+    try {
+      const idleResult = await updateIdleSetting(_battery_idle+_ac_idle);
+      diagnosticInfo(`[power-settings] idle setter complete source=${source}`, idleResult)
+      const suspendResult = await updateSuspendSetting(_battery_suspend+_ac_suspend);
+      diagnosticInfo(`[power-settings] suspend setter complete source=${source}`, suspendResult)
+      diagnosticInfo(`[power-settings] apply complete source=${source}`)
+    } catch (error) {
+      diagnosticError(`[power-settings] apply failed source=${source}`, error)
+      throw error
+    }
+  }
+  const applySavedSettings = async (source: string) => {
     const batteryIdle = await getSettings(BATTERY_IDLE_MINUTES, DEFAULT_BATTERY_IDLE_MINUTES)
     const acIdle = await getSettings(AC_IDLE_MINUTES, DEFAULT_AC_IDLE_MINUTES)
     const batterySuspend = await getSettings(BATTERY_SUSPEND_MINUTES, DEFAULT_BATTERY_SUSPEND_MINUTES)
@@ -282,7 +366,16 @@ export default definePlugin((serverApi: ServerAPI) => {
     const batterySuspendSeconds = minutesToSeconds(batterySuspend.success ? batterySuspend.result : DEFAULT_BATTERY_SUSPEND_MINUTES)
     const acSuspendSeconds = minutesToSeconds(acSuspend.success ? acSuspend.result : DEFAULT_AC_SUSPEND_MINUTES)
 
-    await updateSetting(batteryIdleSeconds, acIdleSeconds, batterySuspendSeconds, acSuspendSeconds)
+    await updateSetting(batteryIdleSeconds, acIdleSeconds, batterySuspendSeconds, acSuspendSeconds, source)
+  }
+
+  let isInhibited = false
+  const applySavedSettingsIfUninhibited = async (source: string) => {
+    if (isInhibited) {
+      diagnosticInfo(`[power-settings] apply skipped source=${source}; inhibitor active`)
+      return
+    }
+    await applySavedSettings(`dropdown:${source}`)
   }
   
   const getEvent = async () => {
@@ -319,16 +412,23 @@ export default definePlugin((serverApi: ServerAPI) => {
     let event = data.result;
     for (let e of event) {
       if (e.type == 'Inhibit') {
+        isInhibited = true
         notify(t("ScreenSaver"), t("Inhibit"))
-        await updateSetting(0, 0, 0, 0);
+        await updateSetting(0, 0, 0, 0, 'inhibit');
       } else if (e.type == 'UnInhibit') {
+        isInhibited = false
         notify(t("ScreenSaver"), t("UnInhibit"))
-        await applySavedSettings();
+        await applySavedSettings('uninhibit');
       }
     }
   }, 1000)
 
   setTimeout(async () => {
+    const diagnostic = await getSettings(DIAGNOSTIC_LOGGING, false)
+    if (diagnostic.success) {
+      diagnosticLogging = diagnostic.result
+    }
+
     let notify = await getSettings(SHOW_NOTIFY, false)
     if (notify.success) {
       showNotify = notify.result
@@ -343,12 +443,12 @@ export default definePlugin((serverApi: ServerAPI) => {
 
   return {
     title: <div className={staticClasses.Title}>Suspend Manager</div>,
-    content: <Content serverApi={serverApi} />,
+    content: <Content serverApi={serverApi} applySettings={applySavedSettingsIfUninhibited} />,
     icon: <GiNightSleep />,
     onDismount() {
       if (interval) clearInterval(interval);
       setTimeout(async () => {
-        await applySavedSettings();
+        await applySavedSettings('plugin-unload');
       }, 0);
     },
   };
