@@ -5,8 +5,6 @@ import {
   PanelSectionRow,
   DropdownItem,
   ServerAPI,
-  findModuleChild,
-  Module,
   staticClasses,
 } from "decky-frontend-lib";
 import { VFC } from "react";
@@ -18,22 +16,6 @@ let backendRunning = false;
 let showNotify     = false;
 let language = i18n.getCurrentLanguage()
 const t = i18n.useTranslations(language)
-
-const findModule = (property: string) => {
-  return findModuleChild((m: Module) => {
-    if (typeof m !== "object") return undefined;
-    for (let prop in m) {
-      try {
-        if (m[prop][property]) {
-          return m[prop];
-        }
-      } catch (e) {
-        return undefined;
-      }
-    }
-  });
-}
-const SystemSleep = findModule("InitiateSleep")
 
 const RUN_ON_LOGIN = "run_on_login"
 const SHOW_NOTIFY  = "show_notify"
@@ -205,15 +187,6 @@ const Content: VFC<{ serverApi: ServerAPI }> = ({serverApi}) => {
 };
 
 export default definePlugin((serverApi: ServerAPI) => {
-  let forced_suspend:NodeJS.Timeout;
-  let forced_suspend_tip:NodeJS.Timeout;
-  let input_changed:boolean = true;
-
-  const clearSuspendTimeout = () => {
-    clearTimeout(forced_suspend)
-    clearTimeout(forced_suspend_tip)
-  }
-
   let SettingDef = {
     battery_idle: {
       field: 1,
@@ -239,44 +212,8 @@ export default definePlugin((serverApi: ServerAPI) => {
   let updateIdleSetting = _updateSettings;
   let updateSuspendSetting = _updateSettings;
 
-  // SteamClient version 1759461205 does not have `RegisterForControllerStateChanges`
-  let controllerHandle: any = null;
-  controllerHandle =
-    SteamClient.Input.RegisterForControllerStateChanges &&
-    SteamClient.Input.RegisterForControllerStateChanges (
-    (changes: any[]) => {
-      if (input_changed) return
-      for (const inputs of changes) {
-        const { ulButtons, sLeftStickX, sLeftStickY, sRightStickX, sRightStickY, } = inputs;
-        if (ulButtons != 0) { input_changed = true; }
-        if (Math.abs(sLeftStickX) > 5000 || Math.abs(sLeftStickY) > 5000 ||
-            Math.abs(sRightStickX) > 5000 || Math.abs(sRightStickY) > 5000) {
-              input_changed = true;
-        }
-      }
-      if (input_changed) {
-        clearSuspendTimeout()
-      }
-    }
-  );
-  if (!controllerHandle) {
-    controllerHandle = SteamClient.Input.RegisterForControllerInputMessages(
-      () => {
-        if (input_changed) return
-        input_changed = true
-        clearSuspendTimeout()
-      }
-    );
-  }
-
   // SteamClient023 does not have `RegisterForOnSuspendRequest`
-  let suspendHandle: any = null
-  suspendHandle =
-    SteamClient.System.RegisterForOnSuspendRequest && 
-    SteamClient.System.RegisterForOnSuspendRequest(clearSuspendTimeout);
-  if (!suspendHandle) {
-    suspendHandle = SteamClient.User.RegisterForPrepareForSystemSuspendProgress(clearSuspendTimeout);
-
+  if (!SteamClient.System.RegisterForOnSuspendRequest) {
     // SteamClient023 using new suspend settings
     SettingDef.battery_suspend = {
       field: 24003,
@@ -383,31 +320,10 @@ export default definePlugin((serverApi: ServerAPI) => {
     for (let e of event) {
       if (e.type == 'Inhibit') {
         notify(t("ScreenSaver"), t("Inhibit"))
-        clearSuspendTimeout()
         await updateSetting(0, 0, 0, 0);
       } else if (e.type == 'UnInhibit') {
         notify(t("ScreenSaver"), t("UnInhibit"))
         await applySavedSettings();
-        // 1. there is no operation for a long period of time (like 15 minutes)
-        // 2. the application automatically uninhibit screensaver
-        // 3. there is no operation after uninhibit screensaver
-        // When these three things happen in sequence, the system will continue to not suspend, even if the time we set has already been reached.
-        // In this case, we use a custom timer to suspend system as the workaround.
-        clearSuspendTimeout()
-        input_changed = false
-        forced_suspend = setTimeout(() => {
-          forced_suspend_tip = setTimeout(()=>{
-            SystemSleep.InitiateSleep()
-          }, 5_000)
-          serverApi.toaster.toast({
-            title: t("suspend_tip_title"),
-            body: t("suspend_tip_body"),
-            critical: true,
-            duration: 5_000,
-            playSound: false,
-            icon: <GiNightSleep />,
-          });
-        }, 450_000)
       }
     }
   }, 1000)
@@ -431,8 +347,6 @@ export default definePlugin((serverApi: ServerAPI) => {
     icon: <GiNightSleep />,
     onDismount() {
       if (interval) clearInterval(interval);
-      if (controllerHandle) controllerHandle.unregister()
-      if (suspendHandle) suspendHandle.unregister()
       setTimeout(async () => {
         await applySavedSettings();
       }, 0);
