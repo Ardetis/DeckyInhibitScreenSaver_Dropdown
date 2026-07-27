@@ -22,6 +22,14 @@ This is a plugin for Decky Loader (A plugin loader for the Steam Deck), it will 
 
 [Welcome to buy me a cup of coffee](https://www.paypal.me/xfangfang)
 
+### Build
+
+From the plugin directory, run:
+
+```bash
+./cli/decky plugin build "$(pwd)"
+```
+
 ### How does this plugin work
 
 In SteamDeck game mode, when using the browser or video player, SteamDeck will automatically suspend in a few minutes. You need to manually modify the relevant system settings to prevent this behavior.
