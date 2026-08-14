@@ -18,12 +18,32 @@ let diagnosticLogging = false;
 let language = i18n.getCurrentLanguage()
 const t = i18n.useTranslations(language)
 
-const diagnosticInfo = (...args: any[]) => {
-  if (diagnosticLogging) console.info(...args)
+let diagnosticLogWriter: ((level: string, message: string) => Promise<void>) | null = null
+
+const formatDiagnosticArg = (arg: any) => {
+  if (typeof arg === "string") return arg
+  if (arg instanceof Error) return arg.stack || arg.message
+  try {
+    const serialized = JSON.stringify(arg)
+    return serialized === undefined ? String(arg) : serialized
+  } catch {
+    return String(arg)
+  }
 }
-const diagnosticError = (...args: any[]) => {
-  if (diagnosticLogging) console.error(...args)
+
+const writeDiagnostic = (level: string, args: any[]) => {
+  if (!diagnosticLogging) return
+  level === "error" ? console.error(...args) : console.info(...args)
+  if (diagnosticLogWriter) {
+    const message = args.map(formatDiagnosticArg).join(" ")
+    void diagnosticLogWriter(level, message).catch((error) => {
+      console.error("Unable to write plugin diagnostic log", error)
+    })
+  }
 }
+
+const diagnosticInfo = (...args: any[]) => writeDiagnostic("info", args)
+const diagnosticError = (...args: any[]) => writeDiagnostic("error", args)
 const RUN_ON_LOGIN = "run_on_login"
 const SHOW_NOTIFY  = "show_notify"
 const DIAGNOSTIC_LOGGING = "diagnostic_logging"
@@ -248,6 +268,13 @@ const Content: VFC<{
 };
 
 export default definePlugin((serverApi: ServerAPI) => {
+  diagnosticLogWriter = async (level: string, message: string) => {
+    await serverApi.callPluginMethod<any, any>("write_diagnostic_log", {
+      level,
+      message,
+    })
+  }
+
   let SettingDef = {
     battery_idle: {
       field: 1,
@@ -419,6 +446,18 @@ export default definePlugin((serverApi: ServerAPI) => {
         isInhibited = false
         notify(t("ScreenSaver"), t("UnInhibit"))
         await applySavedSettings('uninhibit');
+      } else if (e.type == 'InhibitState') {
+        const backendInhibited = Boolean(e.inhibited)
+        if (backendInhibited === isInhibited) continue
+
+        isInhibited = backendInhibited
+        if (backendInhibited) {
+          diagnosticInfo('[power-settings] repairing missed inhibit transition')
+          await updateSetting(0, 0, 0, 0, 'state-sync')
+        } else {
+          diagnosticInfo('[power-settings] repairing missed uninhibit transition')
+          await applySavedSettings('state-sync')
+        }
       }
     }
   }, 1000)
@@ -448,7 +487,9 @@ export default definePlugin((serverApi: ServerAPI) => {
     onDismount() {
       if (interval) clearInterval(interval);
       setTimeout(async () => {
+        await serverApi.callPluginMethod<any, any>("stop_backend", {});
         await applySavedSettings('plugin-unload');
+        diagnosticLogWriter = null
       }, 0);
     },
   };

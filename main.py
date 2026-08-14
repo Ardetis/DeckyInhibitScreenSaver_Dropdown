@@ -64,6 +64,29 @@ def diagnostic_log(message):
     if diagnostic_logging:
         decky_plugin.logger.info(message)
 
+
+def log_diagnostic_snapshot():
+    desired, grace_seconds, source = policy_registry.evaluate(
+        BaseInterface.request_map.values()
+    )
+    diagnostic_log(
+        f'[snapshot] backend_running={bus is not None} desired={desired} '
+        f'effective={effective_inhibited} source={source} grace={grace_seconds} '
+        f'active={len(BaseInterface.request_map)}'
+    )
+    for request in BaseInterface.request_map.values():
+        diagnostic_log(
+            f'[snapshot] inhibitor cookie={request.cookie} sender={request.sender} '
+            f'application={request.application!r} reason={request.reason!r}'
+        )
+    if mpris_monitor is not None:
+        for player in mpris_monitor.snapshot():
+            diagnostic_log(
+                f'[snapshot] mpris name={player["name"]} owner={player["owner"]} '
+                f'status={player["status"]}'
+            )
+
+
 def schedule_policy_refresh(changed):
     if changed:
         asyncio.create_task(refresh_effective_inhibit_state())
@@ -303,6 +326,8 @@ async def start_dbus():
             await bus.request_name('org.freedesktop.ScreenSaver')
             await bus.request_name('org.gnome.SessionManager')
             await start_runtime_monitors()
+            if diagnostic_logging:
+                log_diagnostic_snapshot()
         except Exception as e:
             await stop_runtime_monitors()
             if bus is not None:
@@ -337,26 +362,27 @@ class Plugin:
                 res.append(event_queue.get_nowait())
             except queue.Empty:
                 continue
-        if len(res) > 0:
-            return res
-        if bus is None:
-            return []
-        # check closed dbus connection
-        cookies = list(BaseInterface.request_map.keys())
-        requests_changed = False
-        for c in cookies:
-            connected = await BaseInterface.request_map[c].is_connected()
-            if not connected:
-                request = BaseInterface.request_map.pop(c)
-                diagnostic_log(
-                    f'[inhibit] disconnected cookie={c} sender={request.sender} '
-                    f'application={request.application!r} reason={request.reason!r} '
-                    f'active={len(BaseInterface.request_map)}'
-                )
-                requests_changed = True
-        if requests_changed:
-            await refresh_effective_inhibit_state()
-        return []
+        if bus is not None and len(res) == 0:
+            # Check closed D-Bus connections when there are no queued transitions.
+            cookies = list(BaseInterface.request_map.keys())
+            requests_changed = False
+            for c in cookies:
+                connected = await BaseInterface.request_map[c].is_connected()
+                if not connected:
+                    request = BaseInterface.request_map.pop(c)
+                    diagnostic_log(
+                        f'[inhibit] disconnected cookie={c} sender={request.sender} '
+                        f'application={request.application!r} reason={request.reason!r} '
+                        f'active={len(BaseInterface.request_map)}'
+                    )
+                    requests_changed = True
+            if requests_changed:
+                await refresh_effective_inhibit_state()
+
+        # Always include authoritative state so a frontend reload or dropped
+        # transition cannot leave Steam's power settings out of sync.
+        res.append({"type": "InhibitState", "inhibited": effective_inhibited})
+        return res
 
     async def get_settings(self, key: str, defaults):
         diagnostic_log('[settings] get {}'.format(key))
@@ -368,7 +394,12 @@ class Plugin:
         if key == "diagnostic_logging":
             diagnostic_logging = bool(value)
         diagnostic_log('[settings] set {}: {}'.format(key, value))
+        if key == "diagnostic_logging" and diagnostic_logging:
+            log_diagnostic_snapshot()
         return result
+
+    async def write_diagnostic_log(self, level: str, message: str):
+        diagnostic_log(f'[frontend:{level}] {message}')
 
     async def _main(self):
         global diagnostic_logging
